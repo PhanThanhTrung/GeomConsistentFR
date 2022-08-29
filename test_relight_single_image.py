@@ -1,13 +1,16 @@
+import glob
+import os
+import cv2
+import imageio
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-import os
-import sys
-import cv2
+import tqdm
 from kornia.geometry.depth import depth_to_normals
-import scipy.io
-import imageio
+
+from face_parsing_PyTorch.test import BiSeNetModel
+
 
 class RelightNet(nn.Module):
     def __init__(self):
@@ -505,119 +508,95 @@ class RelightNet(nn.Module):
         return c2_o_albedo, c2_o_depth, shadow_mask_weights, ambient_light, full_shading, rendered_images, unit_light_direction, ambient_values, final_shading, surface_normals
 
 def main():
+    facemask_model = BiSeNetModel('/home/miles/face_recognition/GeomConsistentFR/face_parsing_PyTorch/models/79999_iter.pth')
     model = RelightNet()
     model.load_state_dict(torch.load('model/model_epoch99.pth'))
     model = model.float()
     model = model.cuda()
     model.eval()
-    training_images = np.zeros((1, 256, 256, 3))
-    img_name = '00295.png'
-    training_images[0, :, :, :] = cv2.resize(imageio.imread('sample_test_images_FFHQ/'+img_name)/255.0, (256, 256))
-    training_lightings = np.zeros((1, 4))
-    training_lightings[0, 0] = 0.5
-   
-    #Multi-PIE lighting 4, used to generate 00110.png, 00300.png, 00525.png 
-    '''training_lightings[0, 1] = 0.7518
-    training_lightings[0, 2] = 0.0
-    training_lightings[0, 3] = 0.6594'''
-    #Multi-PIE lighting 14, used to generate 00104.png
-    '''training_lightings[0, 1] = 0.6893
-    training_lightings[0, 2] = 0.3991
-    training_lightings[0, 3] = 0.6047'''
-    #Multi-PIE lighting 5
-    '''training_lightings[0, 1] = 0.5145
-    training_lightings[0, 2] = 0.0
-    training_lightings[0, 3] = 0.8575'''
-    #Multi-PIE lighting 9, used to generate 00290.png
-    '''training_lightings[0, 1] = -0.5843
-    training_lightings[0, 2] = 0.0
-    training_lightings[0, 3] = 0.8115'''
-    #Multi-PIE lighting 10, used to generate 00322.png, 00572.png
-    '''training_lightings[0, 1] = -0.7574
-    training_lightings[0, 2] = 0
-    training_lightings[0, 3] = 0.6529'''
-    #Multi-PIE lighting 18
-    '''training_lightings[0, 1] = -0.7076
-    training_lightings[0, 2] = 0.3892
-    training_lightings[0, 3] = 0.5897'''
-    #Multi-PIE lighting 17, used to generate 00695.png
-    '''training_lightings[0, 1] = -0.5151
-    training_lightings[0, 2] = 0.4722
-    training_lightings[0, 3] = 0.7154'''
-    #Multi-PIE lighting 15
-    '''training_lightings[0, 1] = 0.4478
-    training_lightings[0, 2] = 0.4925
-    training_lightings[0, 3] = 0.7463'''
-    #A00E45, top lighting, used to generate 00295.png
-    training_lightings[0, 1] = 0
-    training_lightings[0, 2] = 0.7071
-    training_lightings[0, 3] = 0.7071
-    #A60E-20, bottom left
-    '''training_lightings[0, 1] = -0.8138
-    training_lightings[0, 2] = -0.3420
-    training_lightings[0, 3] = 0.4698'''
-    #A-60E-20, bottom right, used to generate 00508.png
-    '''training_lightings[0, 1] = 0.8138
-    training_lightings[0, 2] = -0.3420
-    training_lightings[0, 3] = 0.4698'''
+    all_id_path = glob.glob('/home/miles/face_recognition/sample/*')
+    for id_path in all_id_path:
+        all_image_path = glob.glob(id_path+'/*.jpg')
+        for image_path in tqdm.tqdm(all_image_path[:20]):
+            img_name = image_path.split('/')[-1]
+            id_name = image_path.split('/')[-2]
+            training_images = np.zeros((1, 256, 256, 3))
+            image = cv2.imread(image_path)
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            training_images[0, :, :, :] = cv2.resize(image/255.0, (256, 256))
+            training_lightings = np.zeros((1, 4))
+            training_lightings[0, 0] = 0.5
+        
+            training_lightings[0, 1] = 0
+            training_lightings[0, 2] = 0.7071
+            training_lightings[0, 3] = 0.7071
 
-    training_masks = np.zeros((1, 256, 256, 1))
-    training_masks[0, :, :, :] = np.reshape(imageio.imread('FFHQ_skin_masks/'+img_name), (256, 256, 1))
-    training_masks_fill_nose = np.zeros((1, 256, 256, 1))
-    training_masks_fill_nose[0, :, :, :] = np.reshape(imageio.imread('FFHQ_skin_masks/'+img_name), (256, 256, 1))
-    epoch = 200
-    intrinsic_matrix = np.zeros((1, 3, 3))
-    intrinsic_matrix[:, 0, 0] = 1570.0
-    intrinsic_matrix[:, 1, 1] = 1570.0
-    intrinsic_matrix[:, 2, 2] = 1.0
-    intrinsic_matrix[:, 0, 2] = model.img_width/2.0
-    intrinsic_matrix[:, 1, 2] = model.img_height/2.0
-    intrinsic_matrix = torch.from_numpy(intrinsic_matrix)
-    batch_list = np.arange(1)
-    num_batches = 1
+            mask = facemask_model.predict(image)
+            mask = np.expand_dims(mask, -1)
+            all_care_class = [1,  2,  3,  4,  5,  6,  9, 10, 11, 12, 13]
+            output = np.zeros_like(mask, dtype = np.uint8)
+            for elem in all_care_class:
+                output[mask==elem]=255
+                # cv2.imwrite(f'{elem}.jpg',output)
+            # import ipdb; ipdb.set_trace()
+            training_masks = np.zeros((1, 256, 256, 1))
+            mask = cv2.resize(output.astype(np.uint8), (256,256), cv2.INTER_CUBIC)
+            training_masks[0, :, :, :] = np.reshape(mask, (256, 256, 1))
+            training_masks_fill_nose = np.zeros((1, 256, 256, 1))
+            training_masks_fill_nose[0, :, :, :] = np.reshape(mask, (256, 256, 1))
+            epoch = 20
+            intrinsic_matrix = np.zeros((1, 3, 3))
+            intrinsic_matrix[:, 0, 0] = 1570.0
+            intrinsic_matrix[:, 1, 1] = 1570.0
+            intrinsic_matrix[:, 2, 2] = 1.0
+            intrinsic_matrix[:, 0, 2] = model.img_width/2.0
+            intrinsic_matrix[:, 1, 2] = model.img_height/2.0
+            intrinsic_matrix = torch.from_numpy(intrinsic_matrix)
+            batch_list = np.arange(1)
+            num_batches = 1
+            # import ipdb; ipdb.set_trace()
 
-    L1_loss = nn.L1Loss()
-    L1_loss_sum = nn.L1Loss(reduction='sum')
+            with torch.no_grad():
+                for j in range(num_batches):
+                    curr_input_images = torch.from_numpy(training_images[(batch_list[j]*model.batch_size):((batch_list[j]+1)*model.batch_size)]) 
+                    curr_training_lightings = torch.from_numpy(training_lightings[(batch_list[j]*model.batch_size):((batch_list[j]+1)*model.batch_size)])
+                    curr_mask = torch.from_numpy(training_masks[batch_list[j]])/255.0
+                    batch_mask = curr_mask.repeat(model.batch_size, 1, 1, 1)
+                    albedo, depth, shadow_mask_weights, ambient_light, full_shading, rendered_images, unit_light_direction, ambient_values, final_shading, surface_normals = model(curr_input_images.float().cuda(), epoch, intrinsic_matrix.cuda(), curr_mask.cuda(), torch.reshape(curr_training_lightings[:, 1:4].float().cuda(), (model.batch_size, 3, 1, 1)), torch.reshape(curr_training_lightings[:, 0].float().cuda(), (model.batch_size, 1, 1)), batch_mask.cuda())
+                    
+                    rendered_images = rendered_images.permute(0, 2, 3, 1)
+                    rendered_images = rendered_images.cpu().numpy()
+                    albedo = albedo.permute(0, 2, 3, 1)
+                    albedo = albedo.cpu().numpy()
+                    depth = depth.permute(0, 2, 3, 1)
+                    depth = depth.cpu().numpy()
+                    depth = -depth
+                    depth = (depth-np.amin(depth))/(np.amax(depth)-np.amin(depth))
+                    final_shading = final_shading.cpu().numpy()
+                    surface_normals = surface_normals.permute(0, 2, 3, 1)
+                    surface_normals = surface_normals.cpu().numpy()
+                    surface_normals = 255.0*(surface_normals+1.0)/2.0
 
-    with torch.no_grad():
-        for j in range(num_batches):
-            curr_input_images = torch.from_numpy(training_images[(batch_list[j]*model.batch_size):((batch_list[j]+1)*model.batch_size)]) 
-            curr_training_lightings = torch.from_numpy(training_lightings[(batch_list[j]*model.batch_size):((batch_list[j]+1)*model.batch_size)])
-            curr_mask = torch.from_numpy(training_masks[batch_list[j]])/255.0
-            batch_mask = curr_mask.repeat(model.batch_size, 1, 1, 1)
-            albedo, depth, shadow_mask_weights, ambient_light, full_shading, rendered_images, unit_light_direction, ambient_values, final_shading, surface_normals = model(curr_input_images.float().cuda(), epoch, intrinsic_matrix.cuda(), curr_mask.cuda(), torch.reshape(curr_training_lightings[:, 1:4].float().cuda(), (model.batch_size, 3, 1, 1)), torch.reshape(curr_training_lightings[:, 0].float().cuda(), (model.batch_size, 1, 1)), batch_mask.cuda())
-            
-            rendered_images = rendered_images.permute(0, 2, 3, 1)
-            rendered_images = rendered_images.cpu().numpy()
-            albedo = albedo.permute(0, 2, 3, 1)
-            albedo = albedo.cpu().numpy()
-            depth = depth.permute(0, 2, 3, 1)
-            depth = depth.cpu().numpy()
-            depth = -depth
-            depth = (depth-np.amin(depth))/(np.amax(depth)-np.amin(depth))
-            final_shading = final_shading.cpu().numpy()
-            surface_normals = surface_normals.permute(0, 2, 3, 1)
-            surface_normals = surface_normals.cpu().numpy()
-            surface_normals = 255.0*(surface_normals+1.0)/2.0
+                    curr_mask_3_channels = np.zeros((model.img_height, model.img_width, 3))
+                    curr_mask_3_channels[:, :, 0] = np.reshape(curr_mask.numpy(), (model.img_height, model.img_width))
+                    curr_mask_3_channels[:, :, 1] = np.reshape(curr_mask.numpy(), (model.img_height, model.img_width))
+                    curr_mask_3_channels[:, :, 2] = np.reshape(curr_mask.numpy(), (model.img_height, model.img_width))
 
-            curr_mask_3_channels = np.zeros((model.img_height, model.img_width, 3))
-            curr_mask_3_channels[:, :, 0] = np.reshape(curr_mask.numpy(), (model.img_height, model.img_width))
-            curr_mask_3_channels[:, :, 1] = np.reshape(curr_mask.numpy(), (model.img_height, model.img_width))
-            curr_mask_3_channels[:, :, 2] = np.reshape(curr_mask.numpy(), (model.img_height, model.img_width))
+                    curr_mask_fill_nose = torch.from_numpy(training_masks_fill_nose[batch_list[j]])/255.0
+                    curr_mask_fill_nose_3_channels = np.zeros((model.img_height, model.img_width, 3))
+                    curr_mask_fill_nose_3_channels[:, :, 0] = np.reshape(curr_mask_fill_nose.numpy(), (model.img_height, model.img_width))
+                    curr_mask_fill_nose_3_channels[:, :, 1] = np.reshape(curr_mask_fill_nose.numpy(), (model.img_height, model.img_width))
+                    curr_mask_fill_nose_3_channels[:, :, 2] = np.reshape(curr_mask_fill_nose.numpy(), (model.img_height, model.img_width))
 
-            curr_mask_fill_nose = torch.from_numpy(training_masks_fill_nose[batch_list[j]])/255.0
-            curr_mask_fill_nose_3_channels = np.zeros((model.img_height, model.img_width, 3))
-            curr_mask_fill_nose_3_channels[:, :, 0] = np.reshape(curr_mask_fill_nose.numpy(), (model.img_height, model.img_width))
-            curr_mask_fill_nose_3_channels[:, :, 1] = np.reshape(curr_mask_fill_nose.numpy(), (model.img_height, model.img_width))
-            curr_mask_fill_nose_3_channels[:, :, 2] = np.reshape(curr_mask_fill_nose.numpy(), (model.img_height, model.img_width))
-
-            for k in range(model.batch_size):
-                name_parts = img_name.split('.')
-                input_image = training_images[batch_list[j]*model.batch_size+k]*255.0
-                input_image = input_image[:, :, ::-1]
-                rendered_image = 255.0*rendered_images[k, :, :, ::-1]*curr_mask_fill_nose_3_channels
-                input_image[curr_mask_fill_nose_3_channels > 0] = rendered_image[curr_mask_fill_nose_3_channels > 0]
-                cv2.imwrite('FFHQ_relighting_results/'+name_parts[0]+'_rendered_image.png', input_image)
+                    for k in range(model.batch_size):
+                        name_parts = img_name.split('.')
+                        input_image = training_images[batch_list[j]*model.batch_size+k]*255.0
+                        input_image = input_image[:, :, ::-1]
+                        rendered_image = 255.0*rendered_images[k, :, :, ::-1]*curr_mask_fill_nose_3_channels
+                        input_image[curr_mask_fill_nose_3_channels > 0] = rendered_image[curr_mask_fill_nose_3_channels > 0]
+                        path = f'FFHQ_relighting_results/{id_name}/{name_parts[0]}_rendered_image.png'
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        cv2.imwrite(path, input_image)
             
 if __name__ == '__main__':
     main()
